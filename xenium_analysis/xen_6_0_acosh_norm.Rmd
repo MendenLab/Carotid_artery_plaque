@@ -1,0 +1,144 @@
+```{r}
+.libPaths('../../../R_libs/4.2.1')
+.libPaths()
+```
+
+```{r}
+suppressPackageStartupMessages({
+library('MAST')
+library(data.table)
+library(transformGamPoi)
+library(BiocParallel)
+library(scran)
+library(SingleCellExperiment)
+library(Matrix)
+})
+
+#options(mc.cores = parallelly::availableCores() - 1) 
+```
+
+
+## PLOT MEAN-VARIANCE OF DATA AND DETERMINE THE OVERDISPERSION PARAMETER BAED ON THE PLOT, THAT WILL BE USED FOR THE ACOSH NORMALISATION
+
+```{r}
+proc_dir='../../xenium_data/processed_data/baysor_processed_output/'
+scale_param='10'
+avg_assignment_conf_thr='0.75'
+
+cellt_var='final_low_level_celltype'
+#coln_for_dge='stability'
+
+
+for (scale_param in c('10','15')[1:2]){
+    
+  for (panel in c('Panel1','Panel2')[1:2]){
+    print(paste0(c(scale_param,panel)))
+    
+    ## Check the mean-variance plot and find the overdispersion that fists best to the data!  
+    if (scale_param=='10'){
+      overdispersion=5
+    }
+    
+     if (scale_param=='15'){
+        overdispersion=8
+    }
+    
+    
+    ## Load Panel adata
+    fn=paste0(proc_dir,'filtered_batch_corr_annotated_',panel,'_cells_scale_',scale_param,'_asg_conf_',avg_assignment_conf_thr,'_.h5ad')
+    adata=zellkonverter::readH5AD(file=fn,reader='python')
+    
+    sce=adata
+    
+    #====== Plot mean-variance plot + fit curve with manually set Gamma-Poisson overdispersion factor ============
+    ## Rename AssayName from 'X' to 'counts', as this is necessary for scDblFinder to run
+    #assayNames(dat)[grepl('cellbender',assayNames(dat))]='counts'
+    
+    # Exclude genes where all counts are zero
+    sce <- sce[rowMeans2(assay(sce,'raw_counts')) > 0, ]
+    
+    gene_means <- rowMeans2(assay(sce,'raw_counts'))
+    gene_var <- rowVars(assay(sce,'raw_counts'))
+    plot(gene_means, gene_var, log = "xy", main=paste0(scale_param,' - ',panel," - Log-log scatter plot of mean vs variance"))
+    abline(a = 0, b = 1)
+    sorted_means <- sort(gene_means)
+    lines(sorted_means, sorted_means + overdispersion * sorted_means^2, col = "purple")
+
+    
+  }
+}
+```
+```{r}
+proc_dir='/data/gpfs/projects/punim2121/Atherosclerosis/xenium_data/processed_data/baysor_processed_output/'
+scale_param='10'
+avg_assignment_conf_thr='0.75'
+
+cellt_var='final_low_level_celltype'
+#coln_for_dge='stability'
+
+
+for (scale_param in c('10','15')[1:2]){
+    
+  for (panel in c('Panel1','Panel2')[1:2]){
+    print(paste0(c(scale_param,panel)))
+    
+    
+    ## Load Panel adata
+    fn=paste0(proc_dir,'filtered_batch_corr_annotated_',panel,'_cells_scale_',scale_param,'_asg_conf_',avg_assignment_conf_thr,'_.h5ad')
+    adata=zellkonverter::readH5AD(file=fn,reader='python')
+    
+    sce=adata
+    
+    #====== Plot mean-variance plot + fit curve with manually set Gamma-Poisson overdispersion factor ============
+    ## Rename AssayName from 'X' to 'counts', as this is necessary for scDblFinder to run
+    #assayNames(dat)[grepl('cellbender',assayNames(dat))]='counts'
+    
+    ## Check the mean-variance plot and find the overdispersion that fists best to the data!  
+    if (scale_param=='10'){
+      overdispersion=5
+    }
+    
+     if (scale_param=='15'){
+        overdispersion=8
+    }
+  
+
+    
+     #====== Calculate size factors for all cells with scran -> use Fastcluster clusters for this ===========
+    print('Startint size factor estimation!')
+    input_groups=sce@colData[,cellt_var,drop=T]
+    data_mat=((assay(sce,'raw_counts')))
+    register(MulticoreParam(workers = 4))
+    size_factors = calculateSumFactors(data_mat, clusters=input_groups)
+    print('Size factor estimation done!')
+    rm(data_mat)
+
+    #size_factors=sce@colData$cell_mask_area_um2
+  
+    #====== Apply acosh transformation to the raw counts ============
+    assay(sce, withDimnames=FALSE,"acosh")=acosh_transform(assay(sce, "raw_counts"),size_factors=size_factors,overdispersion=overdispersion,on_disk = FALSE)
+  
+    ## Plot mean-variance plot of normalised data
+    #acosh_var <- rowVars(assay(sce, "acosh"))
+    #plot(gene_means, acosh_var, log = "x", main = paste0(scale_param,' - ',panel,"Log expression vs variance of acosh stabilized values"))
+    #abline(h = 1)
+  
+    sparse_matrix <- Matrix(assay(sce, withDimnames=FALSE,"acosh"), sparse = TRUE)
+    fn=paste0(proc_dir,'filtered_batch_corr_annotated_',panel,'_cells_scale_',scale_param,'_asg_conf_',avg_assignment_conf_thr,'_acosh.mtx')
+    writeMM(sparse_matrix, file = fn)
+  }
+}
+```
+
+```{r}
+size_factors[is.infinite(size_factors)]
+size_factors[is.na(size_factors) | is.infinite(size_factors)]
+data_mat <- assay(sce, 'raw_counts')
+data_mat[is.na(data_mat) | is.infinite(data_mat)]# <- 0
+
+
+
+print(summary(size_factors))
+print(summary(data_mat))
+```
+

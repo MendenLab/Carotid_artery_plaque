@@ -1,0 +1,213 @@
+```{r}
+#.libPaths('/data/gpfs/projects/punim2121/R_libs/4.1.2')
+.libPaths('/data/gpfs/projects/punim2121/R_libs/4.2.1')
+.libPaths()
+```
+
+```{r}
+#library(sceasy)
+#BiocManager::install("slingshot")
+suppressPackageStartupMessages({
+#library(Seurat)
+library(SingleCellExperiment)
+library("slingshot")
+#library(SeuratData)
+#library(scriabin)
+library(tidyverse)
+library(RColorBrewer)
+library(umap)
+#library(ComplexHeatmap)
+#library(cowplot)
+#library(magrittr)
+})
+```
+
+
+```{r}
+proc_dir='/data/gpfs/projects/punim2121/Atherosclerosis/data/'
+ref_genomes=c('GRCh38-p14-Gencode_v44','GRCh38-p13-Gencode_v33')
+
+
+for (ref_genome in ref_genomes[1:1]){
+  
+  ## Load Panel adata
+  fn=paste0(proc_dir,ref_genome,'_filtered_batch_corrected_clustered_annotated.h5ad')
+  adata=zellkonverter::readH5AD(file=fn,reader='python')
+    sce=adata
+    
+}
+```   
+
+
+```{r}
+
+reducedDims(sce_ct)
+#for (high_ct in unique(sce@colData[,'final_high_level_celltype'])){ 
+for (high_ct in c('Macrophage')){   
+  
+  print(high_ct)
+  
+  sce_ct=sce[,sce@colData[,'final_high_level_celltype']==high_ct]
+  
+  reduced_dimname="scpoli_repr"
+  celltype_clusterLabels='final_low_level_celltype_substates'
+  celltype_clusterLabels='final_low_level_celltype'
+  
+    # filter genes down to potential cell-type markers
+  # at least M (5) reads in at least N (10) cells
+  geneFilter <- apply(assays(sce_ct)$raw,1,function(x){
+      sum(x >= 5) >= 10
+  })
+
+  sce_ct_filt <- sce_ct[geneFilter, ]
+  
+  
+  
+  ## Calculate UMAP
+  umap_res = umap(reducedDims(sce_ct_filt)[[reduced_dimname]])
+  umap_coords <- umap_res$layout
+  #umap_coords = reducedDims(sce_ct_filt)[['X_umap']]
+  
+  reducedDim(sce_ct_filt,'UMAP') <- umap_coords
+  
+  
+  #library(mclust, quietly = TRUE)
+  #cl1 <- Mclust(reducedDim(sce_ct_filt,'UMAP'))$classification
+  #colData(sce_ct_filt)$GMM <- cl1
+
+  
+
+  
+  sce_ct_filt <- slingshot(sce_ct_filt, 
+                      approx_points = 150,
+                      clusterLabels = celltype_clusterLabels, 
+                      reducedDim = 'UMAP',#reduced_dimname,
+                      start.clus = 'Mac_C1Q'
+                      )
+  
+  
+          
+}
+
+```
+```{r}
+lin1 <- getLineages(umap_coords,sce_ct_filt@colData[,celltype_clusterLabels], start.clus = 'Mac_C1Q')
+lin1@metadata$lineages
+```
+
+
+```{r}
+library(ggplot2)
+
+# Your inputs
+red_dim_name <- reduced_dimname            # Name of the reducedDim (e.g., "UMAP", "TSNE", etc.)
+color_by_var <-celltype_clusterLabels          # Name of the metadata column to color by
+
+# Extract UMAP coordinates
+#umap_coords <- reducedDims(sce_ct_filt)[[red_dim_name]]
+
+# Create data frame for plotting
+plot_df <- data.frame(
+  UMAP_1 = umap_coords[, 1],
+  UMAP_2 = umap_coords[, 2],
+  color_var = colData(sce_ct)[[color_by_var]]
+)
+
+# Plot with ggplot2
+ggplot(plot_df, aes(x = UMAP_1, y = UMAP_2, color = color_var)) +
+  geom_point(size = 1, alpha = 0.8) +
+  labs(color = color_by_var) +
+  theme_minimal() +
+  ggtitle(paste("UMAP colored by", color_by_var))
+```
+
+```{r}
+
+colors <- colorRampPalette(brewer.pal(11,'Spectral')[-6])(100)
+plotcol <- colors[cut(sce_ct_filt$slingPseudotime_1, breaks=100)]
+
+plot(reducedDims(sce_ct_filt)[['UMAP']], col = plotcol, pch=16, asp = 1)
+plot(reducedDims(sce_ct_filt)[['UMAP']],  pch=16, asp = 1)
+lines(SlingshotDataSet(sce_ct_filt), lwd=2, col='black')
+```
+
+```{r}
+cluster_labels <- unique(sce_ct_filt@colData[[celltype_clusterLabels]])
+cluster_colors <- setNames(brewer.pal(length(cluster_labels), "Set1"), cluster_labels)
+
+# Map colors to each column
+#side_colors <- cluster_colors[heatclus]
+side_colors = cluster_colors[as.character(sce_ct_filt@colData[[celltype_clusterLabels]])]
+
+
+plot(reducedDims(sce_ct_filt)[['UMAP']], col = side_colors, pch=16, asp = 1)
+lines(SlingshotDataSet(sce_ct_filt), lwd=2, type = 'lineages', col = 'black')
+```
+
+
+```{r}
+library(tradeSeq)
+
+
+# fit negative binomial GAM
+sce_ct_filt_GAM <- fitGAM(sds=SlingshotDataSet(sce_ct_filt),counts=assays(sce_ct_filt)$raw)
+
+# test for dynamic expression
+ATres <- associationTest(sce_ct_filt_GAM)
+```
+
+
+```{r Fig1, echo=FALSE, fig.height=2, fig.width=4.5}
+
+library(pheatmap)
+
+topgenes <- rownames(ATres[order(ATres$pvalue), ])[1:20]
+pst.ord <- order(sce_ct_filt@colData$slingPseudotime_1, na.last = NA)
+heatdata <- assays(sce_ct_filt)$acosh[topgenes, pst.ord]
+rownames(heatdata) = sce_ct_filt@rowRanges[topgenes,]@elementMetadata$HGNC_NAME
+
+heatclus <-sce_ct_filt[[celltype_clusterLabels]][pst.ord]
+
+# Get unique labels and assign colors
+cluster_labels <- unique(heatclus)
+cluster_colors <- setNames(brewer.pal(length(cluster_labels), "Set1"), cluster_labels)
+
+# Map colors to each column
+#side_colors <- cluster_colors[heatclus]
+side_colors = cluster_colors[as.character(heatclus)]
+
+
+heatmap(as.matrix(heatdata), Colv = NA,
+        ColSideColors = side_colors,
+        scale='row',
+        margins = c(5,7))  # increase margins if needed)
+
+
+# # Define annotation
+# ann_col <- data.frame(Cluster = heatclus)
+# rownames(ann_col) <- colnames(heatdata)
+# 
+# # Plot with colorbar
+# pheatmap(heatdata,
+#          #color = my_palette,
+#          #breaks = my_breaks,
+#          annotation_col = ann_col,
+#          show_rownames = FALSE,
+#          scale = "none")
+
+# Add legend
+legend(x = 0.8, y = 1,                                    # position
+       legend = names(cluster_colors),              # labels
+       fill = cluster_colors,                       # colors
+       border = NA,
+       cex = 0.8,
+       bty = "n")  
+```
+
+```{r}
+
+sce_ct_filt@colData[order(sce_ct_filt@colData$slingPseudotime_1,na.last = NA),c('slingPseudotime_1','slingPseudotime_2','final_low_level_celltype')]
+
+
+```
+
